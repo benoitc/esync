@@ -1,0 +1,5 @@
+esync.d
+ebin
+deps
+.DS_Store
+.erlang.mk
