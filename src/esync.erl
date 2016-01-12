@@ -15,16 +15,25 @@
 init_app() ->
     {ok, _} = application:ensure_all_started(esync),
     ?FILES = ets:new(?FILES, [ordered_set, public, named_table]),
+    ?STATS = ets:new(?STATS, [ordered_set, public, named_table]),
 
+    init_jobs(),
+    init_stats(),
+    ok.
+
+init_jobs() ->
     jobs:add_queue(?CQ,[passive]),
     jobs:add_queue(?CJ, [{standard_counter, 20},
                          {producer, fun copy_job/0}]),
-
     jobs:add_queue(?BQ,[passive]),
     jobs:add_queue(?BJ, [{standard_counter, 500},
                          {producer, fun build_job/0}]),
-
     ok.
+
+init_stats() ->
+    ets:insert(?STATS, [{conflicts, 0},
+                        {ncopy, 0},
+                        {size, 0}]).
 
 
 maybe_copy(Source, Target) ->
@@ -41,7 +50,8 @@ maybe_copy(Source, Target) ->
                         true ->
                             {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
                             #file_info{mtime=MTime} = FileInfo,
-                            NTarget = find_name(Target ++ "."++ integer_to_list(MTime), 0),
+                            NTarget = find_name(Target ++ "." ++ integer_to_list(MTime), 0),
+                            ets:update_counter(?STATS, conflicts, {2, 1}),
                             ets:insert(?FILES, {Source, NTarget})
                     end;
                 false -> ets:insert(?FILES, {Source, Target})
@@ -77,6 +87,14 @@ find_name(Target, Inc) ->
         false -> NewTarget
     end.
 
+update_stats(Source) ->
+    {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
+    #file_info{size=Sz} = FileInfo,
+    ets:update_counter(?STATS, size, {2, Sz}),
+    ets:udpate_counter(?STATS, ncopy, {1, 1}),
+    ok.
+
+
 copy_job() ->
     [{_, {Source, Target, Server}}] = jobs:dequeue(?CQ, 1),
     case filelib:is_file(Source) of
@@ -84,7 +102,8 @@ copy_job() ->
             TargetDir = filename:dirname(Target),
             esync_util:make_dir(TargetDir),
             filelib:ensure_dir(Target),
-            {ok, _} = file:copy(Source, Target);
+            {ok, _} = file:copy(Source, Target),
+            update_stats(Source);
         false ->
             ok
     end,
@@ -132,6 +151,14 @@ process_files({[{Source, Target}], Cont}, N) ->
     ok = jobs:enqueue(?CQ, {Source, Target, self()}),
     process_files(ets:select(Cont), N+1).
 
+
+display_stats() ->
+    Conflicts = ets:update_counter(?STATS, conflicts, {2, 0}),
+    NCopy = ets:update_counter(?STATS, ncopy, {2, 0}),
+    Size = ets:update_counter(?STATS, size, {2, 0}),
+    io:format("~nsize: ~p copied: ~p conflicts: ~p~n", [Size, NCopy, Conflicts]).
+
+
 main([Source, Target]) ->
     io:format("building file list ... ", []),
     ok = init_app(),
@@ -140,6 +167,7 @@ main([Source, Target]) ->
     io:format("done~n", []),
     io:format("copy files ... ", []),
     Res = ets:select(?FILES, [{{'$1','$2'},[],[{{'$1','$2'}}]}], 1),
-    process_files(Res, 0);
+    process_files(Res, 0),
+    display_stats();
 main(_) ->
     esync_util:abort("usage: esync SOURCE TARGET~n", []).
