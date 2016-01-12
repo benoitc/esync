@@ -15,4 +15,4 @@ esync copy one folder to another but keeps files in conflicts in the folder by a
 
 ## Usage
 
-    $./escript SOURCE TARGET
+    $./esync SOURCE TARGET
