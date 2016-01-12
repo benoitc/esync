@@ -21,7 +21,7 @@ init_app() ->
                          {producer, fun copy_job/0}]),
 
     jobs:add_queue(?BQ,[passive]),
-    jobs:add_queue(?BJ, [{standard_counter, 100},
+    jobs:add_queue(?BJ, [{standard_counter, 500},
                          {producer, fun build_job/0}]),
 
     ok.
@@ -60,9 +60,10 @@ maybe_copy(Source, Target) ->
     ok.
 
 build_job() ->
-    [{_, {Source, Target}}] = jobs:dequeue(?BQ, 1),
+    [{_, {Source, Target, Server}}] = jobs:dequeue(?BQ, 1),
     try
-        maybe_copy(Source, Target)
+        maybe_copy(Source, Target),
+        Server ! ack
     catch
         Error ->
             esync_util:abort("~n~s: ~p~n", [Source, Error])
@@ -92,39 +93,40 @@ copy_job() ->
 
 build_list(Source, Target) ->
     Files = filelib:wildcard("*", Source),
-    process_path(Files, Source, #{ source => Source,
-                                   target => Target}).
+    N = process_path(Files, Source, #{ source => Source, target => Target}, 0),
+    wait_for_jobs(N).
 
 
-process_path([], _Dir, _State) ->
-    ok;
-process_path([".DS_Store" | Rest], Dir, State) ->
-    process_path(Rest, Dir, State);
-process_path([File | Rest], Dir, State) ->
+process_path([], _Dir, _State, N) ->
+    N;
+process_path([".DS_Store" | Rest], Dir, State, N) ->
+    process_path(Rest, Dir, State, N);
+process_path([File | Rest], Dir, State, N) ->
     #{ source := Source,
        target := Target} = State,
 
     SourceFile = filename:join(Dir, File),
     RelPath = esync_util:relpath(SourceFile, Source),
-    case filelib:is_dir(SourceFile) of
-        true ->
-            Files = filelib:wildcard("*", SourceFile),
-            process_path(Files, SourceFile, State);
-        false ->
-            TargetFile = filename:join(Target, RelPath),
-            ok = jobs:enqueue(?BQ, {SourceFile, TargetFile})
-    end,
-    process_path(Rest, Dir, State).
+    N2 = case filelib:is_dir(SourceFile) of
+             true ->
+                 Files = filelib:wildcard("*", SourceFile),
+                 process_path(Files, SourceFile, State, N);
+             false ->
+                 TargetFile = filename:join(Target, RelPath),
+                 ok = jobs:enqueue(?BQ, {SourceFile, TargetFile, self()}),
+                 N+1
+         end,
+    process_path(Rest, Dir, State, N2).
 
-wait_for_copy(0) ->
+wait_for_jobs(0) ->
     ok;
-wait_for_copy(N) ->
+wait_for_jobs(N) ->
     receive
-        ack -> wait_for_copy(N-1)
+        ack -> wait_for_jobs(N-1)
     end.
 
 process_files('$end_of_table', N) ->
-    wait_for_copy(N),
+    wait_for_jobs(N),
     io:format("done~n", []);
 process_files({[{Source, Target}], Cont}, N) ->
     ok = jobs:enqueue(?CQ, {Source, Target, self()}),
