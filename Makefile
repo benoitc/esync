@@ -1,10 +1,11 @@
-PROJECT = esync 
+PROJECT = esync
 PROJECT_DESCRIPTION = simple tool to sync files
-PROJECT_VERSION = 0.0.1
+PROJECT_VERSION = 0.0.2
 
-LOCAL_DEPS = crypto jobs
-DEPS = jobs
+LOCAL_DEPS = crypto worker_pool
+DEPS = worker_pool
 
-dep_jobs = git https://github.com/uwiger/jobs.git 0.3
+
+dep_worker_pool = git https://github.com/inaka/worker_pool.git 1.0.4
 
 include erlang.mk

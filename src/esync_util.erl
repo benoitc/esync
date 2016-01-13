@@ -5,6 +5,7 @@
 -export([md5_file/1]).
 -export([partition/2]).
 -export([relpath/2]).
+-export([timestamp/0]).
 
 -define(BLOCK_SIZE, 32768).
 
@@ -81,3 +82,8 @@ relpath(Path, Root) ->
             "\\\\" ++ RelPath1 = RelPath,
             RelPath1
     end.
+
+
+timestamp() ->
+    {A, B, _} = os:timestamp(),
+    (A * 1000000) + B.
