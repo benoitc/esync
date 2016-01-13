@@ -1,7 +1,8 @@
 -module(esync).
 -export([main/1]).
 
--export([copy_worker/2, build_worker/2]).
+-export([copy_worker/2]).
+-export([process_path/3]).
 
 -define(STATS, stats).
 -define(FILES, files).
@@ -27,7 +28,7 @@ init_pool() ->
 
 init_stats() ->
     ets:insert(?STATS, [{conflicts, 0},
-                        {checked, 0},
+                        {dirs, 0},
                         {ncopy, 0},
                         {size, 0}]).
 
@@ -42,39 +43,27 @@ maybe_copy(Source, Target) ->
                 true ->
                     {ok, TargetHash} = esync_util:md5_file(Target),
                     if
-                        TargetHash == SourceHash -> ok;
+                        TargetHash == SourceHash -> false;
                         true ->
                             {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
                             #file_info{mtime=MTime} = FileInfo,
                             NTarget = find_name(Target ++ "." ++ integer_to_list(MTime), 0),
                             ets:update_counter(?STATS, conflicts, {2, 1}),
                             ets:insert(?CONFLICTS, {NTarget, Source}),
-                            ets:insert(?FILES, {Source, NTarget})
+                            NTarget
                     end;
-                false -> ets:insert(?FILES, {Source, Target})
+                false -> Target
             end;
         false ->
-            Target2 = case filelib:is_file(Target) of
-                          true ->
-                              {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
-                              #file_info{mtime=MTime} = FileInfo,
-                              find_name(Target ++ "."++ integer_to_list(MTime), 0);
-                          false ->
-                              Target
-                      end,
-            ets:insert(?FILES, {Source, Target2})
-    end,
-    ok.
-
-build_worker(Source, Target) ->
-    ets:update_counter(?STATS, checked, 1),
-    try
-        maybe_copy(Source, Target)
-    catch
-        Error ->
-            esync_util:abort("~n~s: ~p~n", [Source, Error])
+            case filelib:is_file(Target) of
+                true ->
+                    {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
+                    #file_info{mtime=MTime} = FileInfo,
+                    find_name(Target ++ "."++ integer_to_list(MTime), 0);
+                false ->
+                    Target
+            end
     end.
-
 
 find_name(Target, Inc) ->
     NewTarget = Target ++ "." ++ integer_to_list(Inc),
@@ -93,43 +82,57 @@ update_stats(Source) ->
 copy_worker(Source, Target) ->
     case filelib:is_file(Source) of
         true ->
-            TargetDir = filename:dirname(Target),
-            esync_util:make_dir(TargetDir),
-            filelib:ensure_dir(Target),
-            {ok, _} = file:copy(Source, Target),
-            update_stats(Source);
+            case maybe_copy(Source, Target) of
+                false -> ok;
+                Target2 ->
+                    catch do_copy(Source, Target2)
+            end;
         false ->
             ok
     end,
     ets:update_counter(?STATS, ncopy, {2, 1}).
 
 
+do_copy(Source, Target) ->
+    TargetDir = filename:dirname(Target),
+    esync_util:make_dir(TargetDir),
+    filelib:ensure_dir(Target),
+    {ok, _} = file:copy(Source, Target),
+    update_stats(Source).
+
+
+
 build_list(Source, Target) ->
     Files = filelib:wildcard("*", Source),
-    process_path(Files, Source, #{ source => Source, target => Target}, 0).
+    process_path(Files, Source, #{ source => Source, target => Target}),
+    wait_for(dirs, -1).
 
 
-process_path([], _Dir, _State, N) ->
-    wait_for(checked, N),
-    N;
-process_path([".DS_Store" | Rest], Dir, State, N) ->
-    process_path(Rest, Dir, State, N);
-process_path([File | Rest], Dir, State, N) ->
+process_path([], _Dir, _State) ->
+    ets:update_counter(?STATS, dirs, {2, -1}),
+    ok;
+process_path(["." | Rest], Dir, State) ->
+    process_path(Rest, Dir, State);
+process_path([".." | Rest], Dir, State) ->
+    process_path(Rest, Dir, State);
+process_path([".DS_Store" | Rest], Dir, State) ->
+    process_path(Rest, Dir, State);
+process_path([File | Rest], Dir, State) ->
     #{ source := Source,
        target := Target} = State,
     SourceFile = filename:join(Dir, File),
     RelPath = esync_util:relpath(SourceFile, Source),
-    N2 = case filelib:is_dir(SourceFile) of
+    case filelib:is_dir(SourceFile) of
              true ->
-                 Files = filelib:wildcard("*", SourceFile),
-                 process_path(Files, SourceFile, State, N);
+                Files = filelib:wildcard("*", SourceFile),
+                Args = [Files, SourceFile, State],
+                wpool:cast(esync_pool, {?MODULE, process_path, Args}),
+                ets:update_counter(?STATS, dirs, {2, 1});
              false ->
                  TargetFile = filename:join(Target, RelPath),
-                 Args =  [SourceFile, TargetFile],
-                 wpool:cast(esync_pool, {?MODULE, build_worker, Args}),
-                 N + 1
+                 ets:insert(?FILES, {SourceFile, TargetFile})
          end,
-    process_path(Rest, Dir, State, N2).
+    process_path(Rest, Dir, State).
 
 wait_for(Key, N) ->
     case ets:update_counter(?STATS, Key, {2, 0}) of
@@ -184,8 +187,9 @@ main([Source, Target]) ->
     ok = init_app(),
     io:format("building file list ...", []),
     esync_util:make_dir(Target),
-    N = build_list(Source, Target),
-    io:format("~n~ndone (~p files processed)~n", [N]),
+    build_list(Source, Target),
+    Size = ets:info(?FILES, size),
+    io:format("~n~ndone (~p files processed)~n", [Size]),
     io:format("copy files ... ", []),
     Res = ets:select(?FILES, [{{'$1','$2'},[],[{{'$1','$2'}}]}], 1),
     process_files(Res, 0),
