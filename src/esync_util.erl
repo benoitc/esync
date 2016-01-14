@@ -83,7 +83,6 @@ relpath(Path, Root) ->
             RelPath1
     end.
 
-
 timestamp() ->
     {A, B, _} = os:timestamp(),
     (A * 1000000) + B.

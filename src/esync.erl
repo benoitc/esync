@@ -47,7 +47,7 @@ maybe_copy(Source, Target) ->
                         true ->
                             {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
                             #file_info{mtime=MTime} = FileInfo,
-                            NTarget = find_name(Target ++ "." ++ integer_to_list(MTime), 0),
+                            NTarget = find_name(Target ++ ".conflict-" ++ integer_to_list(MTime), 0),
                             ets:update_counter(?STATS, conflicts, {2, 1}),
                             ets:insert(?CONFLICTS, {NTarget, Source}),
                             NTarget
@@ -162,8 +162,8 @@ display_stats() ->
 store_conflicts('$end_of_table', _Fd) ->
     ok;
 store_conflicts({[{Conflict, _Source}], Cont}, Fd) ->
-   ok = file:write(Fd, << "|n", (list_to_binary(Conflict))/binary >>),
-   store_conflicts(ets:select(Cont), Fd).
+    ok = file:write(Fd, list_to_binary(io_lib:format("~p~n", [Conflict]))),
+    store_conflicts(ets:select(Cont), Fd).
 
 save_log() ->
     Conflicts = ets:update_counter(?STATS, conflicts, {2, 0}),
@@ -173,12 +173,12 @@ save_log() ->
                             [Size, NCopy, Conflicts]),
 
     LogFile = "esync-" ++ integer_to_list(esync_util:timestamp()) ++ ".log",
-    Fd  = file:open(LogFile, [raw, append]),
+    {ok, Fd} = file:open(LogFile, [raw, append]),
     file:write(Fd, list_to_binary(LogLine)),
     file:write(Fd, <<"\nconflicts:\n">>),
 
 
-    Res = ets:select(?FILES, [{{'$1','$2'},[],[{{'$1','$2'}}]}], 1),
+    Res = ets:select(?CONFLICTS, [{{'$1','$2'},[],[{{'$1','$2'}}]}], 1),
     ok = store_conflicts(Res, Fd),
     file:sync(Fd),
     file:close(Fd).
@@ -189,7 +189,7 @@ main([Source, Target]) ->
     esync_util:make_dir(Target),
     build_list(Source, Target),
     Size = ets:info(?FILES, size),
-    io:format("~n~ndone (~p files processed)~n", [Size]),
+    io:format("~n~ndone (~p files found)~n", [Size]),
     io:format("copy files ... ", []),
     Res = ets:select(?FILES, [{{'$1','$2'},[],[{{'$1','$2'}}]}], 1),
     process_files(Res, 0),
