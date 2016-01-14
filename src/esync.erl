@@ -30,6 +30,7 @@ init_stats() ->
     ets:insert(?STATS, [{conflicts, 0},
                         {dirs, 0},
                         {ncopy, 0},
+                        {progress, 0},
                         {size, 0}]).
 
 
@@ -45,23 +46,52 @@ maybe_copy(Source, Target) ->
                     if
                         TargetHash == SourceHash -> false;
                         true ->
-                            {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
-                            #file_info{mtime=MTime} = FileInfo,
-                            NTarget = find_name(Target ++ ".conflict-" ++ integer_to_list(MTime), 0),
-                            ets:update_counter(?STATS, conflicts, {2, 1}),
-                            ets:insert(?CONFLICTS, {NTarget, Source}),
-                            NTarget
+                            case has_conflict(Target, TargetHash) of
+                                true -> false;
+                                false -> create_conflict(Source, Target)
+                            end
                     end;
                 false -> Target
             end;
         false ->
             case filelib:is_file(Target) of
                 true ->
-                    {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
-                    #file_info{mtime=MTime} = FileInfo,
-                    find_name(Target ++ "."++ integer_to_list(MTime), 0);
+                    create_conflict(Source, Target);
                 false ->
                     Target
+            end
+    end.
+
+create_conflict(Source, Target) ->
+    {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
+    #file_info{mtime=MTime} = FileInfo,
+    NTarget = find_name(Target ++ ".conflict-" ++ integer_to_list(MTime), 0),
+    ets:update_counter(?STATS, conflicts, {2, 1}),
+    ets:insert(?CONFLICTS, {NTarget, Source}),
+    NTarget.
+
+
+has_conflict(TargetFile, Hash) ->
+    TargetDir = filename:dirname(TargetFile),
+    Files = filelib:wildcard("*", TargetDir),
+    find_conflict(Files, TargetDir, Hash).
+
+find_conflict([], _TargetDir, _Hash) ->
+    false;
+find_conflict(["." | Rest], TargetDir, Hash) ->
+    find_conflict(Rest, TargetDir, Hash);
+find_conflict([".." | Rest], TargetDir, Hash) ->
+    find_conflict(Rest, TargetDir, Hash);
+find_conflict([RelFile | Rest], TargetDir, Hash) ->
+    File = filename:join(TargetDir, RelFile),
+    case filelib:is_dir(File) of
+        true ->
+            find_conflict(Rest, TargetDir, Hash);
+        false ->
+            {ok, FileHash} = esync_util:md5_file(File),
+            if
+                FileHash == Hash -> true;
+                true -> find_conflict(Rest, TargetDir, Hash)
             end
     end.
 
@@ -83,14 +113,16 @@ copy_worker(Source, Target) ->
     case filelib:is_file(Source) of
         true ->
             case maybe_copy(Source, Target) of
-                false -> ok;
+                false ->
+                    ok;
                 Target2 ->
+                    ets:update_counter(?STATS, ncopy, {2, 1}),
                     catch do_copy(Source, Target2)
             end;
         false ->
             ok
     end,
-    ets:update_counter(?STATS, ncopy, {2, 1}).
+    ets:update_counter(?STATS, progress, {2, 1}).
 
 
 do_copy(Source, Target) ->
@@ -144,7 +176,7 @@ wait_for(Key, N) ->
     end.
 
 process_files('$end_of_table', N) ->
-    wait_for(ncopy, N),
+    wait_for(progress, N),
     io:format("done~n", []);
 process_files({[{Source, Target}], Cont}, N) ->
     Args =  [Source, Target],
