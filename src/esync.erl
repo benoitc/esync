@@ -11,11 +11,13 @@
 
 -include_lib("kernel/include/file.hrl").
 
+-define(MIN_WORKERS, 10).
+
 init_app() ->
     error_logger:tty(false),
     {ok, _} = application:ensure_all_started(esync),
     error_logger:tty(true),
-    ?FILES = ets:new(?FILES, [ordered_set, public, named_table]),
+    ?FILES = ets:new(?FILES, [ordered_set, public, named_table, compressed]),
     ?STATS = ets:new(?STATS, [ordered_set, public, named_table]),
     ?CONFLICTS = ets:new(?CONFLICTS, [ordered_set, public, named_table]),
 
@@ -24,7 +26,14 @@ init_app() ->
     ok.
 
 init_pool() ->
-    wpool:start_pool(esync_pool).
+    NumWorkers = case erlang:system_info(threads) of
+                     true ->
+                         erlang:system_info(thread_pool_size) * 2 + 1;
+                     false ->
+                         ?MIN_WORKERS
+                 end,
+
+    wpool:start_pool(esync_pool, [{workers, NumWorkers}]).
 
 init_stats() ->
     ets:insert(?STATS, [{conflicts, 0},
