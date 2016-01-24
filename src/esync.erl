@@ -49,8 +49,8 @@ maybe_copy(Source, Target) ->
     case IsRegular of
         true ->
             {ok, SourceHash} = esync_util:md5_file(Source),
-            case filelib:is_file(Target) of
-                true ->
+            case {filelib:is_file(Target), filelib:is_regular(Target)} of
+                {true, true} ->
                     {ok, TargetHash} = esync_util:md5_file(Target),
                     if
                         TargetHash == SourceHash -> false;
@@ -60,7 +60,10 @@ maybe_copy(Source, Target) ->
                                 false -> create_conflict(Source, Target)
                             end
                     end;
-                false -> Target
+                {true, false} ->
+                    create_conflict(Source, Target);
+                _ ->
+                    Target
             end;
         false ->
             case filelib:is_file(Target) of
