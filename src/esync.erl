@@ -114,8 +114,7 @@ find_name(Target, Inc) ->
         false -> NewTarget
     end.
 
-update_stats(Source) ->
-    {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
+update_stats(FileInfo) ->
     #file_info{size=Sz} = FileInfo,
     ets:update_counter(?STATS, size, {2, Sz}),
     ok.
@@ -142,7 +141,9 @@ do_copy(Source, Target) ->
     esync_util:make_dir(TargetDir),
     filelib:ensure_dir(Target),
     {ok, _} = file:copy(Source, Target),
-    update_stats(Source).
+    {ok, FileInfo} = file:read_file_info(Source, [{time, posix}]),
+    _ = file:write_file_info(Target, FileInfo),
+    update_stats(FileInfo).
 
 
 
